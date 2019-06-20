@@ -10,6 +10,7 @@ import android.location.Location
 import android.net.Uri
 import android.os.Bundle
 import android.os.PersistableBundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.content.res.AppCompatResources
@@ -47,8 +48,9 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
     private lateinit var originLocation: Location
 
     private lateinit var originPoint: Point
-    private lateinit var clickedPoint: Point
     private lateinit var carParkedPoint: Point
+
+    private var clickedPoint: Point? = null
 
     private var locationEngine: LocationEngine? = null
     private var locationLayerPlugin: LocationLayerPlugin? = null
@@ -56,6 +58,11 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
     private var parkedPointMarker: Marker? = null
     private var navigationMapRoute: NavigationMapRoute? = null
 
+    private enum class carColors{
+        RED, GREEN
+    }
+
+    @SuppressLint("RestrictedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -67,41 +74,62 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
             enableLocation()
             map.addOnMapClickListener {
                 clickedPoint = Point.fromLngLat(it.longitude, it.latitude)
-                displayMarker(clickedPoint, "red")
+                displayMarker(clickedPoint, carColors.RED)
             }
             originPoint = Point.fromLngLat(originLocation.longitude, originLocation.latitude)
             if(hasCarParked()){
                 carParkedPoint = readParkLocation()
-                displayMarker(carParkedPoint, "green")
+                displayMarker(carParkedPoint, carColors.GREEN)
                 getRoute(originPoint, carParkedPoint)
             }
         }
 
         park.setOnClickListener {
+            originPoint = Point.fromLngLat(originLocation.longitude, originLocation.latitude)
 
-            if(::clickedPoint.isInitialized){
-                if(hasCarParked()) {
-                    removeMarker(parkedPointMarker)
-                }
+            if(clickedPointMarker != null){
                 removeMarker(clickedPointMarker)
+            }
+            if(parkedPointMarker != null){
+                removeMarker(parkedPointMarker)
+            }
+
+            if(clickedPoint == null) {
+                writeParkLocation(originPoint)
+                displayMarker(originPoint, carColors.GREEN)
+                getRoute(originPoint,originPoint)
+                Toast.makeText(this@MainActivity, R.string.parked, Toast.LENGTH_SHORT).show()
+            }
+            else{
                 writeParkLocation(clickedPoint)
-                displayMarker(clickedPoint, "green")
-                getRoute(originPoint,clickedPoint)
+                displayMarker(clickedPoint, carColors.GREEN)
+                getRoute(originPoint, clickedPoint)
+                clickedPoint = null
+                Toast.makeText(this@MainActivity, R.string.parked_other_location, Toast.LENGTH_SHORT).show()
             }
         }
 
         nav.setOnClickListener {
-            if(hasCarParked()) {
-                val destination = readParkLocation()
-                val lat = destination.latitude()
-                val long = destination.longitude()
-                val gmmIntentUri: Uri = Uri.parse("geo:0,0?q=$lat,$long&mode=w")
-                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-
-                mapIntent.setPackage("com.google.android.apps.maps")
-                startActivity(mapIntent)
-            }
+            navigateToPoint()
         }
+
+        locate.setOnClickListener {
+            setCameraPosition(originLocation)
+        }
+
+        if(!hasCarParked()){
+            nav.visibility = View.GONE
+        }
+    }
+
+    private fun navigateToPoint() {
+        val destination = readParkLocation()
+        val lat = destination.latitude()
+        val long = destination.longitude()
+        val gmmIntentUri: Uri = Uri.parse("geo:0,0?q=$lat,$long&mode=w")
+        val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+        mapIntent.setPackage(getString(R.string.google_maps_package))
+        startActivity(mapIntent)
     }
 
     private fun hasCarParked():Boolean{
@@ -116,55 +144,61 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
         return Point.fromLngLat(long,lat)
     }
 
-    private fun writeParkLocation(position: Point){
+    @SuppressLint("RestrictedApi")
+    private fun writeParkLocation(position: Point?){
         var sp: SharedPreferences = getSharedPreferences("parking", Context.MODE_PRIVATE)
         var editor = sp!!.edit()
-        editor.putString("lat", position.latitude().toString())
-        editor.putString("long", position.longitude().toString())
+        editor.putString("lat", position?.latitude().toString())
+        editor.putString("long", position?.longitude().toString())
         editor.apply()
+        park.visibility = View.VISIBLE
     }
 
-    private fun getRoute(origin: Point, destination: Point) {
-        NavigationRoute.builder()
-            .accessToken(Mapbox.getAccessToken())
-            .origin(origin)
-            .destination(destination)
-            .build()
-            .getRoute(object : retrofit2.Callback<DirectionsResponse>{
+    private fun getRoute(origin: Point, destination: Point?) {
+        destination?.let {
+            NavigationRoute.builder()
+                .accessToken(Mapbox.getAccessToken())
+                .origin(origin)
+                .destination(it)
+                .build()
+                .getRoute(object : retrofit2.Callback<DirectionsResponse>{
 
-                override fun onResponse(call: Call<DirectionsResponse>, response: Response<DirectionsResponse>) {
-                    val routeResponse = response
-                    val body = routeResponse.body()?: return
-                    if(body.routes().count() == 0){
+                    override fun onResponse(call: Call<DirectionsResponse>, response: Response<DirectionsResponse>) {
+                        val routeResponse = response
+                        val body = routeResponse.body()?: return
+                        if(body.routes().count() == 0){
+                            Toast.makeText(this@MainActivity, "No hay rutas disponibles hasta el coche", Toast.LENGTH_SHORT).show()
+                        }
+
+                        if(navigationMapRoute != null){
+                            navigationMapRoute?.removeRoute()
+                        } else{
+                            navigationMapRoute = NavigationMapRoute(null, mapView, map)
+                        }
+
+                        navigationMapRoute?.addRoute(body.routes().first())
+                    }
+
+                    override fun onFailure(call: Call<DirectionsResponse>, t: Throwable) {
                         Toast.makeText(this@MainActivity, "No hay rutas disponibles hasta el coche", Toast.LENGTH_SHORT).show()
                     }
-
-                    if(navigationMapRoute != null){
-                        navigationMapRoute?.removeRoute()
-                    }
-                    else{
-                        navigationMapRoute = NavigationMapRoute(null, mapView, map)
-                    }
-
-                    navigationMapRoute?.addRoute(body.routes().first())
-                }
-
-                override fun onFailure(call: Call<DirectionsResponse>, t: Throwable) {
-                    Toast.makeText(this@MainActivity, "No hay rutas disponibles hasta el coche", Toast.LENGTH_SHORT).show()
-                }
-            })
+                })
+        }
     }
 
     private fun removeMarker(marker: Marker?){
         marker?.let { map.removeMarker(marker) }
     }
 
-    private fun displayMarker(it: Point?, color: String) {
+    private fun displayMarker(it: Point?, color: carColors) {
         val itLatLng : LatLng? = it?.longitude()?.let { it1 -> LatLng(it?.latitude(), it1) }
         val iconFactory = IconFactory.getInstance(applicationContext)
         val icon = getIcon(iconFactory, color)
 
-        if(color.equals("green")) {
+        if(color == carColors.GREEN) {
+            val let = parkedPointMarker?.let {
+                map.removeMarker(it)
+            }
             parkedPointMarker = map.addMarker(MarkerOptions().position(itLatLng).icon(icon))
         }
         else{
@@ -175,11 +209,11 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
         }
     }
 
-    fun getIcon(iconFactory: IconFactory, color:String): com.mapbox.mapboxsdk.annotations.Icon{
+    private fun getIcon(iconFactory: IconFactory, color: carColors): com.mapbox.mapboxsdk.annotations.Icon{
         var bitmap: Bitmap? = null
         when(color){
-            "red" -> bitmap = getBitmap(R.drawable.ic_car_red)
-            "green" -> bitmap = getBitmap(R.drawable.ic_car_green)
+            carColors.RED -> bitmap = getBitmap(R.drawable.ic_car_red)
+            carColors.GREEN -> bitmap = getBitmap(R.drawable.ic_car_green)
         }
         return iconFactory.fromBitmap(bitmap!!)
     }
