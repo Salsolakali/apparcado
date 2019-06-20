@@ -1,9 +1,13 @@
 package com.example.apparcado
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.location.Location
+import android.net.Uri
 import android.os.Bundle
 import android.os.PersistableBundle
 import android.widget.Toast
@@ -31,6 +35,7 @@ import com.mapbox.mapboxsdk.plugins.locationlayer.modes.CameraMode
 import com.mapbox.mapboxsdk.plugins.locationlayer.modes.RenderMode
 import com.mapbox.services.android.navigation.ui.v5.route.NavigationMapRoute
 import com.mapbox.services.android.navigation.v5.navigation.NavigationRoute
+import kotlinx.android.synthetic.main.activity_main.*
 import retrofit2.Call
 import retrofit2.Response
 
@@ -43,10 +48,12 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
 
     private lateinit var originPoint: Point
     private lateinit var clickedPoint: Point
+    private lateinit var carParkedPoint: Point
 
     private var locationEngine: LocationEngine? = null
     private var locationLayerPlugin: LocationLayerPlugin? = null
     private var clickedPointMarker: Marker? = null
+    private var parkedPointMarker: Marker? = null
     private var navigationMapRoute: NavigationMapRoute? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,12 +67,61 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
             enableLocation()
             map.addOnMapClickListener {
                 clickedPoint = Point.fromLngLat(it.longitude, it.latitude)
-                displayIcon(clickedPoint, "green")
-                getRoute(originPoint,clickedPoint)
-
+                displayMarker(clickedPoint, "red")
             }
             originPoint = Point.fromLngLat(originLocation.longitude, originLocation.latitude)
+            if(hasCarParked()){
+                carParkedPoint = readParkLocation()
+                displayMarker(carParkedPoint, "green")
+                getRoute(originPoint, carParkedPoint)
+            }
         }
+
+        park.setOnClickListener {
+
+            if(::clickedPoint.isInitialized){
+                if(hasCarParked()) {
+                    removeMarker(parkedPointMarker)
+                }
+                removeMarker(clickedPointMarker)
+                writeParkLocation(clickedPoint)
+                displayMarker(clickedPoint, "green")
+                getRoute(originPoint,clickedPoint)
+            }
+        }
+
+        nav.setOnClickListener {
+            if(hasCarParked()) {
+                val destination = readParkLocation()
+                val lat = destination.latitude()
+                val long = destination.longitude()
+                val gmmIntentUri: Uri = Uri.parse("geo:0,0?q=$lat,$long&mode=w")
+                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+
+                mapIntent.setPackage("com.google.android.apps.maps")
+                startActivity(mapIntent)
+            }
+        }
+    }
+
+    private fun hasCarParked():Boolean{
+        var sp: SharedPreferences = getSharedPreferences("parking", Context.MODE_PRIVATE)
+        return sp.contains("long") && sp.contains("lat")
+    }
+
+    private fun readParkLocation():Point{
+        var sp: SharedPreferences = getSharedPreferences("parking", Context.MODE_PRIVATE)
+        val lat = sp.getString("lat",null).toDouble()
+        val long = sp.getString("long", null).toDouble()
+        return Point.fromLngLat(long,lat)
+    }
+
+    private fun writeParkLocation(position: Point){
+        var sp: SharedPreferences = getSharedPreferences("parking", Context.MODE_PRIVATE)
+        var editor = sp!!.edit()
+        editor.putString("lat", position.latitude().toString())
+        editor.putString("long", position.longitude().toString())
+        editor.apply()
     }
 
     private fun getRoute(origin: Point, destination: Point) {
@@ -99,13 +155,17 @@ class MainActivity : AppCompatActivity(), PermissionsListener, LocationEngineLis
             })
     }
 
-    private fun displayIcon(it: Point?, color: String) {
+    private fun removeMarker(marker: Marker?){
+        marker?.let { map.removeMarker(marker) }
+    }
+
+    private fun displayMarker(it: Point?, color: String) {
         val itLatLng : LatLng? = it?.longitude()?.let { it1 -> LatLng(it?.latitude(), it1) }
         val iconFactory = IconFactory.getInstance(applicationContext)
         val icon = getIcon(iconFactory, color)
 
         if(color.equals("green")) {
-            clickedPointMarker = map.addMarker(MarkerOptions().position(itLatLng).icon(icon))
+            parkedPointMarker = map.addMarker(MarkerOptions().position(itLatLng).icon(icon))
         }
         else{
             val let = clickedPointMarker?.let {
